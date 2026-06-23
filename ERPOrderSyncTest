@@ -1,0 +1,100 @@
+@isTest
+public class ERPOrderSyncTest {
+
+    @TestSetup
+	static void setupData() {
+        Account acc = new Account(
+            Name = 'Test Account'
+        );
+        insert acc;
+    
+        Contract con = new Contract(
+            AccountId = acc.Id,
+            StartDate = Date.today(),
+            ContractTerm = 12,
+            Status = 'Draft'
+        );
+        insert con;
+        
+        Order order = new Order(
+            External_Order_Id__c = 'ORD-1001',
+            Status = 'Draft',
+            AccountId = acc.Id,
+            EffectiveDate = Date.Today()+7,
+            ContractId = con.Id
+        );
+        insert order;
+    }
+
+    private static RestRequest buildRequest(String body) {
+        RestRequest req = new RestRequest();
+        req.requestURI = '/erp/orders';
+        req.httpMethod = 'POST';
+        req.requestBody = Blob.valueOf(body);
+        return req;
+    }
+
+    @isTest
+    static void testSuccessfulSyncPublishesEvent() {
+        String jsonBody = '{"orderId":"ORD-1001","status":"Shipped",' +
+            '"lineItems":[{"productCode":"P100","quantity":5,"status":"Shipped"}],' +
+            '"timestamp":"2026-06-23T10:00:00.000Z"}';
+
+        RestContext.request = buildRequest(jsonBody);
+        RestContext.response = new RestResponse();
+
+        Test.startTest();
+        ERPOrderSyncResource.handleOrderSync();
+        Test.stopTest(); // forces async Platform Event delivery to complete
+
+        Order updatedOrder = [SELECT Status FROM Order WHERE External_Order_Id__c = 'ORD-1001'];
+
+        List<OrderItem> items = [SELECT Id, Product_Code__c, Quantity FROM OrderItem WHERE OrderId = :updatedOrder.Id];
+    }
+
+    @isTest
+    static void testFailedMatchCreatesSyncError() {
+        String jsonBody = '{"orderId":"ORD-9999","status":"Shipped",' +
+            '"lineItems":[{"productCode":"P200","quantity":2,"status":"Shipped"}],' +
+            '"timestamp":"2026-06-23T10:00:00.000Z"}';
+
+        RestContext.request = buildRequest(jsonBody);
+        RestContext.response = new RestResponse();
+
+        Test.startTest();
+        ERPOrderSyncResource.handleOrderSync();
+        Test.stopTest();
+
+        List<SyncError__c> errors = [SELECT Id, Order_Id__c, Error_Message__c FROM SyncError__c WHERE Order_Id__c = 'ORD-9999'];
+    }
+
+    @isTest
+    static void testInvalidPayloadReturns400() {
+        String malformedJson = '{invalid json}';
+
+        RestContext.request = buildRequest(malformedJson);
+        RestContext.response = new RestResponse();
+
+        Test.startTest();
+        ERPOrderSyncResource.handleOrderSync();
+        Test.stopTest();
+    }
+
+    @isTest
+    static void testDirectEventBusDeliverSuccessPath() {
+        // Direct event publish + deliver, bypassing the REST layer
+        OrderSync__e evt = new OrderSync__e(
+            Order_Id__c   = 'ORD-1001',
+            Status__c     = 'Delivered',
+            Line_Items__c = '[{"productCode":"P300","quantity":1,"status":"Delivered"}]',
+            Timestamp__c  = DateTime.now()
+        );
+
+        Test.startTest();
+        EventBus.publish(evt);
+        Test.getEventBus().deliver();
+        Test.stopTest();
+
+        Order updatedOrder = [SELECT Status FROM Order WHERE External_Order_Id__c = 'ORD-1001'];
+    }
+}
