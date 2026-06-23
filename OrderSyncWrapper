@@ -1,0 +1,12 @@
+public class OrderSyncWrapper {
+    public String orderId;
+    public String status;
+    public List<LineItem> lineItems;
+    public String timestamp;
+
+    public class LineItem {
+        public String productCode;
+        public Integer quantity;
+        public String status;
+    }
+}
