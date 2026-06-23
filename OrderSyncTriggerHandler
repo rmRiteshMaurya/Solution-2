@@ -1,0 +1,70 @@
+public class OrderSyncTriggerHandler {
+
+    public static void handleEvents(List<OrderSync__e> events) {
+
+        Set<String> orderIds = new Set<String>();
+        for (OrderSync__e evt : events) {
+            if (String.isNotBlank(evt.Order_Id__c)) {
+                orderIds.add(evt.Order_Id__c);
+            }
+        }
+
+        Map<String, Order> existingOrdersMap = new Map<String, Order>();
+        for (Order ord : [
+            SELECT Id, External_Order_Id__c, Status
+            FROM Order
+            WHERE External_Order_Id__c IN :orderIds
+        ]) {
+            existingOrdersMap.put(ord.External_Order_Id__c, ord);
+        }
+
+        List<Order> ordersToUpdate = new List<Order>();
+        List<OrderItem> itemsToUpsert = new List<OrderItem>();
+        List<SyncError__c> errorsToInsert = new List<SyncError__c>();
+
+        for (OrderSync__e evt : events) {
+            Order matchedOrder = existingOrdersMap.get(evt.Order_Id__c);
+
+            if (matchedOrder != null) {
+                matchedOrder.Status = evt.Status__c;
+                ordersToUpdate.add(matchedOrder);
+
+                if (String.isNotBlank(evt.Line_Items__c)) {
+                    try {
+                        List<OrderSyncWrapper.LineItem> items =
+                            (List<OrderSyncWrapper.LineItem>) JSON.deserialize(
+                                evt.Line_Items__c,
+                                List<OrderSyncWrapper.LineItem>.class
+                            );
+                        for (OrderSyncWrapper.LineItem li : items) {
+                            itemsToUpsert.add(new OrderItem(
+                                OrderId        = matchedOrder.Id,
+                                Product_Code__c = li.productCode,
+                                Quantity     = li.quantity,
+                                Status__c       = li.status
+                            ));
+                        }
+                    } catch (Exception parseEx) {
+                        errorsToInsert.add(buildSyncError(evt, 'Line item parse error: ' + parseEx.getMessage()));
+                    }
+                }
+            } else {
+                errorsToInsert.add(buildSyncError(evt, 'No matching Order__c found for Order_Id: ' + evt.Order_Id__c));
+            }
+        }
+
+        if (!ordersToUpdate.isEmpty()) Database.update(ordersToUpdate, false);
+        if (!itemsToUpsert.isEmpty())  Database.insert(itemsToUpsert, false);
+        if (!errorsToInsert.isEmpty()) Database.insert(errorsToInsert, false);
+    }
+
+    private static SyncError__c buildSyncError(OrderSync__e evt, String errorMsg) {
+        return new SyncError__c(
+            Raw_Payload__c   = JSON.serialize(evt),
+            Error_Message__c = errorMsg,
+            Timestamp__c      = evt.Timestamp__c,
+            Order_Id__c       = evt.Order_Id__c,
+            Retry_Count__c    = 0
+        );
+    }
+}
