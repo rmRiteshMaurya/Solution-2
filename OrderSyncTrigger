@@ -1,0 +1,3 @@
+trigger OrderSyncTrigger on OrderSync__e (after insert) {
+    OrderSyncTriggerHandler.handleEvents(Trigger.New);
+}
