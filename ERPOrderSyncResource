@@ -1,0 +1,40 @@
+@RestResource(urlMapping='/erp/orders')
+global class ERPOrderSyncResource {
+
+    @HttpPost
+    global static void handleOrderSync() {
+
+        RestRequest req = RestContext.request;
+        RestResponse res = RestContext.response;
+
+        try {
+            String requestBody = req.requestBody.toString();
+
+            // Deserialize into typed wrapper - validates JSON shape early
+            OrderSyncWrapper payload = (OrderSyncWrapper) JSON.deserialize(
+                requestBody, OrderSyncWrapper.class
+            );
+
+            // Publish Platform Event - NO DML, NO callouts here
+            OrderSync__e event = new OrderSync__e();
+            event.Order_Id__c   = payload.orderId;
+            event.Status__c     = payload.status;
+            event.Line_Items__c = JSON.serialize(payload.lineItems);
+            event.Timestamp__c  = payload.timestamp != null
+                                    ? DateTime.valueOf(payload.timestamp)
+                                    : DateTime.now();
+
+            EventBus.publish(event);
+
+            res.statusCode = 202; // Accepted - processing async
+            res.responseBody = Blob.valueOf('{"message":"Accepted for processing"}');
+
+        } catch (Exception e) {
+            // Malformed payload - reject immediately, do not publish event
+            res.statusCode = 400;
+            res.responseBody = Blob.valueOf(
+                '{"error":"Invalid payload: ' + e.getMessage() + '"}'
+            );
+        }
+    }
+}
